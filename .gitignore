@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated database — we commit the generator script, not the data it produces
+data/*.db
