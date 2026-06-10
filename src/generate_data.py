@@ -77,6 +77,27 @@ TABLE_WORDS = ["fact", "dim", "summary", "history", "snapshot", "detail", "agg"]
 PLATFORMS = ["Snowflake", "Databricks"]
 OBJECT_TYPES = ["TABLE", "TABLE", "TABLE", "EXTERNAL TABLE", "VOLUME"]  # weighted toward TABLE
 
+# --- Reference data for the two extra sources: EDC (catalog) and AskID (ownership) ---
+FIRST_NAMES = ["James", "Maria", "David", "Linda", "Robert", "Emily",
+               "Michael", "Sarah", "Daniel", "Anna", "Kevin", "Priya"]
+LAST_NAMES = ["Smith", "Johnson", "Lee", "Brown", "Garcia", "Martin",
+              "Davis", "Lopez", "Wilson", "Clark", "Nguyen", "Patel"]
+CLASSIFICATIONS = ["Public", "Internal", "Confidential", "Restricted"]
+# Each business domain rolls up to ONE cio -- this lets us later total cost "by CIO".
+DOMAIN_CIO = {
+    "Membership": "Patricia Gomez", "Clinical": "Patricia Gomez", "Quality": "Patricia Gomez",
+    "Claims": "Raj Patel",          "Provider": "Raj Patel",      "Pharmacy": "Raj Patel",
+    "Actuarial": "Susan Clark",     "Marketing": "Susan Clark",   "Finance": "Susan Clark",
+}
+# Healthy products tend to be more business-critical; dead ones less so.
+CRITICALITY_BY_PROFILE = {
+    "healthy": ["High", "Critical"], "monitor": ["Medium", "High"],
+    "review":  ["Low", "Medium"],    "dead":    ["Low", "Medium"],
+}
+# Deliberate governance GAPS -- MinimAIze must detect and flag these.
+PRODUCTS_WITHOUT_OWNERSHIP = {"Legacy Provider Archive"}
+PRODUCTS_WITHOUT_CATALOG = {"Claims Historical Product"}
+
 
 def create_tables(cur):
     """Create the three empty tables. Triple-quoted strings let SQL span lines."""
@@ -111,6 +132,26 @@ def create_tables(cur):
             query_timestamp TEXT                -- when it ran
         )
     """)
+    # EDC = Enterprise Data Catalog: business metadata about each product.
+    cur.execute("""
+        CREATE TABLE edc_catalog (
+            product_id     INTEGER PRIMARY KEY,
+            description    TEXT,
+            classification TEXT,                -- Public / Internal / Confidential / Restricted
+            criticality    TEXT,                -- Low / Medium / High / Critical
+            steward        TEXT
+        )
+    """)
+    # AskID = the ownership directory: who is accountable, up the management chain.
+    cur.execute("""
+        CREATE TABLE askid_ownership (
+            product_id    INTEGER PRIMARY KEY,
+            product_owner TEXT,
+            director      TEXT,
+            vp            TEXT,
+            cio           TEXT
+        )
+    """)
 
 
 def random_date(start_days_ago, end_days_ago):
@@ -119,6 +160,11 @@ def random_date(start_days_ago, end_days_ago):
     span = start_days_ago - end_days_ago
     offset = end_days_ago + random.randint(0, max(span, 0))
     return (TODAY - timedelta(days=offset)).strftime("%Y-%m-%d")
+
+
+def random_person():
+    """Make up a 'First Last' name."""
+    return f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
 
 
 def generate():
@@ -135,6 +181,8 @@ def generate():
     query_id = 1
     asset_rows = []
     query_rows = []
+    edc_rows = []
+    askid_rows = []
 
     # enumerate(..., start=1) gives us (index, item) pairs -- handy for IDs.
     for product_id, (name, domain, profile) in enumerate(PRODUCTS, start=1):
@@ -142,6 +190,25 @@ def generate():
             "INSERT INTO data_products VALUES (?, ?, ?)",
             (product_id, name, domain),
         )
+
+        # EDC catalog entry -- skipped for products with a deliberate metadata gap.
+        if name not in PRODUCTS_WITHOUT_CATALOG:
+            edc_rows.append((
+                product_id,
+                f"{name} -- curated {domain.lower()} data for analytics and reporting.",
+                random.choice(CLASSIFICATIONS),
+                random.choice(CRITICALITY_BY_PROFILE[profile]),
+                random_person(),                       # steward
+            ))
+        # AskID ownership chain -- skipped for products with a deliberate ownership gap.
+        if name not in PRODUCTS_WITHOUT_OWNERSHIP:
+            askid_rows.append((
+                product_id,
+                random_person(),                        # product owner
+                random_person(),                        # director
+                random_person(),                        # vp
+                DOMAIN_CIO[domain],                     # cio
+            ))
 
         # Unpack this profile's knobs. The * unpacks a tuple into randint's two args.
         n_assets_rng, size_rng, idle_rng, consumers_rng, queries_rng = PROFILE_RULES[profile]
@@ -209,6 +276,12 @@ def generate():
     )
     cur.executemany(
         "INSERT INTO query_history VALUES (?, ?, ?, ?, ?)", query_rows
+    )
+    cur.executemany(
+        "INSERT INTO edc_catalog VALUES (?, ?, ?, ?, ?)", edc_rows
+    )
+    cur.executemany(
+        "INSERT INTO askid_ownership VALUES (?, ?, ?, ?, ?)", askid_rows
     )
 
     conn.commit()   # SAVE everything to the file (nothing is permanent until commit)
